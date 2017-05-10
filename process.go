@@ -12,6 +12,7 @@ import (
 )
 
 const (
+	restartTimeout = 100
 	startTimeout   = 1000
 	backoffTimeout = 5000
 	stopTimeout    = 20000
@@ -27,14 +28,17 @@ type Process struct {
 	Env              []string  `json:"env"`              // Inital environment
 	Stdout, Stderr   io.Writer `json:"-"`                // Standard IO pipes
 	StartTimeout     int       `json:"startTimeout"`     // Time to wait for process start in milliseconds
-	BackoffTimeout   int       `json:"backoffTimeout"`   // Delay before restart attempt
+	BackoffTimeout   int       `json:"backoffTimeout"`   // Delay before another start attempt
 	StopTimeout      int       `json:"stopTimeout"`      // Time to wait for process stop in milliseconds
 	KillTimeout      int       `json:"killTimeout"`      // Time to wait after sending the kill signal in milliseconds
 	MaxStartAttempts int       `json:"maxStartAttempts"` // Maximum number of start attempts
+	MaxRestarts      int       `json:"maxRestarts"`      // Maximum number of restarts
+	RestartTimeout   int       `json:"restartTimeout"`   // Delay before restart attempt
 	RestartPolicy    string    `json:"restartPolicy"`    // One of: "always", "on-error", ""
 
 	// Process run-time parameters
 	StartAttempt int    `json:"startAttempt"` // Current number of start attempts
+	RestartCount int    `json:"restartCount"` // Current number of runs
 	State        string `json:"state"`        // Current process state
 	LastError    error  `json:"lastError"`    // Last error encountered
 
@@ -64,10 +68,12 @@ func (p *Process) Run(ctx context.Context) (res chan error) {
 	if p.BackoffTimeout == 0 {
 		p.BackoffTimeout = backoffTimeout
 	}
+	if p.RestartTimeout == 0 {
+		p.RestartTimeout = restartTimeout
+	}
 	if p.KillTimeout == 0 {
 		p.KillTimeout = killTimeout
 	}
-
 	go func() {
 		defer close(res)
 		res <- state.Run(ctx, p.starting, func(ctx context.Context) error {
@@ -109,7 +115,6 @@ func (p *Process) starting(c context.Context) (res state.Func) {
 			}
 			fallthrough
 		case "always":
-			p.StartAttempt++
 			return p.backoff
 		}
 		return p.stopped
@@ -148,7 +153,8 @@ func (p *Process) killing(c context.Context) (res state.Func) {
 }
 
 func (p *Process) backoff(c context.Context) (res state.Func) {
-	if p.MaxStartAttempts != 0 && p.StartAttempt > p.MaxStartAttempts {
+	p.StartAttempt++
+	if p.MaxStartAttempts != 0 && p.StartAttempt >= p.MaxStartAttempts {
 		p.LastError = fmt.Errorf("maximum start attempts reached (last error: %v)", p.LastError)
 		return p.failed
 	}
@@ -166,6 +172,19 @@ func (p *Process) failed(c context.Context) (res state.Func) {
 }
 
 func (p *Process) restarting(c context.Context) (res state.Func) {
+	p.RestartCount++
+	if p.MaxRestarts != 0 && p.RestartCount >= p.MaxRestarts {
+		if p.LastError != nil {
+			return p.failed
+		}
+		return p.stopped
+	}
+	select {
+	case <-c.Done():
+		return p.stopping
+	case <-time.After(time.Duration(p.RestartTimeout) * time.Millisecond):
+		p.LastError = nil
+	}
 	return p.starting
 }
 
@@ -183,8 +202,7 @@ func (p *Process) running(c context.Context) (res state.Func) {
 			}
 			fallthrough
 		case "always":
-			p.StartAttempt++
-			return p.backoff
+			return p.restarting
 		}
 		return p.stopped
 	}

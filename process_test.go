@@ -25,6 +25,31 @@ func TestRun(t *testing.T) {
 	}
 }
 
+func TestRestart(t *testing.T) {
+	p := &process.Process{
+		Cmd:           "/bin/sleep",
+		Args:          []string{"1"},
+		RestartPolicy: "always",
+		MaxRestarts:   3,
+	}
+
+	res := p.Run(context.TODO())
+	select {
+	case err := <-res:
+		if err != nil {
+			t.Fatalf("%+v", err)
+		}
+		if p.LastError != nil {
+			t.Errorf("%#v", p.LastError)
+		}
+		if p.RestartCount != 3 {
+			t.Errorf("invalid restart count %d", p.RestartCount)
+		}
+	case <-time.After(5000 * time.Millisecond):
+		t.Fatal("process not stopped", p)
+	}
+}
+
 func TestStop(t *testing.T) {
 	p := &process.Process{
 		Cmd:  "/bin/sleep",

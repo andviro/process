@@ -31,8 +31,8 @@ type Process struct {
 	BackoffTimeout   int       `json:"backoffTimeout"`   // Delay before another start attempt
 	StopTimeout      int       `json:"stopTimeout"`      // Time to wait for process stop in milliseconds
 	KillTimeout      int       `json:"killTimeout"`      // Time to wait after sending the kill signal in milliseconds
-	MaxStartAttempts int       `json:"maxStartAttempts"` // Maximum number of start attempts
-	MaxRestarts      int       `json:"maxRestarts"`      // Maximum number of restarts
+	MaxStartAttempts int       `json:"maxStartAttempts"` // Maximum number of start attempts (default to give up first time)
+	MaxRestarts      int       `json:"maxRestarts"`      // Maximum number of restarts (default to no restarts)
 	RestartTimeout   int       `json:"restartTimeout"`   // Delay before restart attempt
 	RestartPolicy    string    `json:"restartPolicy"`    // One of: "always", "on-error", ""
 
@@ -54,26 +54,24 @@ func (p *Process) logf(format string, args ...interface{}) (n int, err error) {
 	return fmt.Fprintf(p.Stderr, format, args...)
 }
 
+// New creates process with reasonable defaults
+func New(cmd string, args ...string) (res *Process) {
+	res = new(Process)
+	res.StartTimeout = startTimeout
+	res.StopTimeout = stopTimeout
+	res.BackoffTimeout = backoffTimeout
+	res.RestartTimeout = restartTimeout
+	res.KillTimeout = killTimeout
+	res.MaxStartAttempts = 10
+	res.MaxRestarts = -1
+	return
+}
+
 // Run starts process execution
 func (p *Process) Run(ctx context.Context) (res chan error) {
 	res = make(chan error, 1)
 	ctx, p.Stop = context.WithCancel(ctx)
 
-	if p.StartTimeout == 0 {
-		p.StartTimeout = startTimeout
-	}
-	if p.StopTimeout == 0 {
-		p.StopTimeout = stopTimeout
-	}
-	if p.BackoffTimeout == 0 {
-		p.BackoffTimeout = backoffTimeout
-	}
-	if p.RestartTimeout == 0 {
-		p.RestartTimeout = restartTimeout
-	}
-	if p.KillTimeout == 0 {
-		p.KillTimeout = killTimeout
-	}
 	go func() {
 		defer close(res)
 		res <- state.Run(ctx, p.starting, func(ctx context.Context) error {
@@ -154,17 +152,16 @@ func (p *Process) killing(c context.Context) (res state.Func) {
 
 func (p *Process) backoff(c context.Context) (res state.Func) {
 	p.StartAttempt++
-	if p.MaxStartAttempts != 0 && p.StartAttempt >= p.MaxStartAttempts {
-		p.LastError = fmt.Errorf("maximum start attempts reached (last error: %v)", p.LastError)
+	if p.MaxStartAttempts != -1 && p.StartAttempt > p.MaxStartAttempts {
+		p.logf("%v %s maximum start attempts reached", time.Now(), p.Cmd)
 		return p.failed
 	}
 	select {
 	case <-c.Done():
 		return p.stopping
 	case <-time.After(time.Duration(p.BackoffTimeout) * time.Millisecond):
-		p.LastError = nil
+		return p.starting
 	}
-	return p.starting
 }
 
 func (p *Process) failed(c context.Context) (res state.Func) {
@@ -173,7 +170,8 @@ func (p *Process) failed(c context.Context) (res state.Func) {
 
 func (p *Process) restarting(c context.Context) (res state.Func) {
 	p.RestartCount++
-	if p.MaxRestarts != 0 && p.RestartCount >= p.MaxRestarts {
+	if p.MaxRestarts != -1 && p.RestartCount > p.MaxRestarts {
+		p.logf("%v %s maximum restart count reached", time.Now(), p.Cmd)
 		if p.LastError != nil {
 			return p.failed
 		}
@@ -183,9 +181,8 @@ func (p *Process) restarting(c context.Context) (res state.Func) {
 	case <-c.Done():
 		return p.stopping
 	case <-time.After(time.Duration(p.RestartTimeout) * time.Millisecond):
-		p.LastError = nil
+		return p.starting
 	}
-	return p.starting
 }
 
 func (p *Process) running(c context.Context) (res state.Func) {

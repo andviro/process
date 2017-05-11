@@ -31,6 +31,8 @@ func TestRestart(t *testing.T) {
 		Args:          []string{"1"},
 		RestartPolicy: "always",
 		MaxRestarts:   3,
+		StartTimeout:  100,
+		StopTimeout:   1000,
 	}
 
 	res := p.Run(context.TODO())
@@ -42,7 +44,7 @@ func TestRestart(t *testing.T) {
 		if p.LastError != nil {
 			t.Errorf("%#v", p.LastError)
 		}
-		if p.RestartCount != 3 {
+		if p.RestartCount != 4 {
 			t.Errorf("invalid restart count %d", p.RestartCount)
 		}
 	case <-time.After(5000 * time.Millisecond):
@@ -52,8 +54,10 @@ func TestRestart(t *testing.T) {
 
 func TestStop(t *testing.T) {
 	p := &process.Process{
-		Cmd:  "/bin/sleep",
-		Args: []string{"3"},
+		Cmd:          "/bin/sleep",
+		Args:         []string{"3"},
+		StartTimeout: 100,
+		StopTimeout:  1000,
 	}
 	res := p.Run(context.TODO())
 	go func() {
@@ -77,8 +81,10 @@ func TestStop(t *testing.T) {
 
 func TestCancelContext(t *testing.T) {
 	p := &process.Process{
-		Cmd:  "/bin/sleep",
-		Args: []string{"3"},
+		Cmd:          "/bin/sleep",
+		Args:         []string{"3"},
+		StartTimeout: 100,
+		StopTimeout:  1000,
 	}
 	ctx, cancel := context.WithCancel(context.TODO())
 	go func() {
